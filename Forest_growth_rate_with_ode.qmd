@@ -1,0 +1,301 @@
+---
+title: Assignment - Using Sobol and ODE
+toc: true
+format:
+  html:
+    embed-resources: true
+    code-fold: false 
+    code-tools: true 
+    mathjax: true
+editor_options: 
+  chunk_output_type: console
+editor: 
+  markdown: 
+    wrap: sentence
+author: 
+  - name: Oksana Protsukha
+    affiliation: Master of Environmental Data Science Program
+date: 2025-05-16
+---
+
+```{mermaid}
+%%| label: fig-mermaid
+%%| fig-width: 6
+%%| fig-cap: |
+%%|   Model of a forest growth from young to mature at a certain threshold C
+flowchart TD
+    A[Initial forest size C_innitial] --> B{"Is C less than threshold?"}
+    B -->|"Yes (young forest)"| C["Exponential Growth: 
+    dC/dt = r × C"]
+    B -->|"No (mature forest)"| D["Logistic Growth: 
+    dC/dt = g × (1 - C/K)"]
+    C --> E[Update C]
+    D --> E
+    E --> B
+    
+    style A fill:#D0F0C0,stroke:#333,stroke-width:2px, color:#000000
+    style B fill:#A9BA9D,stroke:#333,stroke-width:2px, color:#000000
+    style C fill:#D0F0C0,stroke:#333,stroke-width:2px, color:#000000
+    style D fill:#9DC183,stroke:#333,stroke-width:2px, color:#000000
+    style E fill:#A9BA9D,stroke:#333,stroke-width:2px, color:#000000
+```
+
+```{r, setup,  message=FALSE, warning=FALSE, results='hide'}
+#| eval: true
+#| echo: false
+#| code-fold: true
+
+knitr::opts_chunk$set(warning = FALSE, message=FALSE)
+
+# import libraries
+library(tidyverse)
+library(deSolve)
+library(sensitivity)
+library(here)
+library(gt)
+library(glue)
+
+source(here("R/forest_growth.R"))
+
+```
+
+### Implement and run the forest growth model for a defined set of parameters
+
+```{r, model-implementation}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+c_initial <- 10
+t <- seq(from = 1, to = 300)
+canopy_thresh <- 50
+K <- 250
+r <- 0.01
+g <- 2
+
+parms <- list(K = K, r = r, g = g, canopy_thresh = canopy_thresh)
+forest_growth_res <- ode(y=c_initial, times=t, func=forest_growth, parms=parms)
+colnames(forest_growth_res) <- c("time", "carbon")
+
+head(forest_growth_res)
+```
+
+### Plot the results (without uncertainty)
+
+```{r, plot-model}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+forest_growth_df <- as.data.frame(forest_growth_res)
+
+forest_growth_df %>% 
+  ggplot(aes(x=time, y=carbon)) +
+  geom_point(col="#9DC183") +
+  xlab("Time (years)") +
+  ylab("Forest growth rate (kg carbon)") +
+  scale_y_continuous(breaks = round(seq(min(forest_growth_df$carbon), 
+                                        max(forest_growth_df$carbon), 
+                                        by = 10),1)) +
+  theme_bw()
+```
+
+### Run sobol global sensitivity analysis for the maximum forest size metric
+
+### Sobol Global Sensitivity Analysis
+
+We will use sobol global sensitivity analysis to generate sensitivity indices which determine how much each input parameter - r, g, K - contributes to variation in the estimated maximum forest growth size (model output).
+
+**Model Inputs** (the parameters we are testing sensitivity for):
+
+-   exponential growth rate before a canopy closure threshold is reached (r),
+
+-   linear growth rate after a canopy threshold is reached (g),
+
+-   carrying capacity (K)
+
+**Model Output** (the metric(s) for which we are analyzing sensitivity): max forest size (e.g.at year 300)
+
+**Assumption**: input parameters are normally distributed with standard deviation 10% of mean value
+
+```{r, growth-sens}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+# Define fixed parameters
+canopy_thresh <- 50
+c_initial <- 10
+
+# Define input parameters for sensitivity analysis
+np <- 300
+#set.seed(999)
+K <- rnorm(n = np, mean = 250, sd = 0.01)
+r <- rnorm(n = np, mean = 0.01, sd = 0.01)
+g <- rnorm(n = np, mean = 2, sd = 0.01)
+X1 <- cbind.data.frame(r = r, g = g, K = K)
+
+#set.seed(999)
+K <- rnorm(n = np, mean = 250, sd = 0.01)
+r <- rnorm(n = np, mean = 0.01, sd = 0.01)
+g <- rnorm(n = np, mean = 2, sd = 0.01)
+X2 <- cbind.data.frame(r = r, g = g, K = K)
+
+# fix any negative values and they are not meaningful
+X1 <- X1 %>% map_df(pmax, 0.0)
+X2 <- X2 %>% map_df(pmax, 0.0)
+
+# create sobel object and get sets of parameters for running the model
+sens_forest <- sobolSalt(model = NULL, X1, X2, nboot = 300)
+
+# view parameter sets are
+head(sens_forest$X)
+
+# add column names
+colnames(sens_forest$X) <- c("r","g","K")
+head(sens_forest$X)
+
+# gets results for 300 years (evaluating every year)
+simtimes <- seq(0, 300, by = 1)
+parms <- list(r = sens_forest$X[1, "r"], 
+              g = sens_forest$X[1, "g"], 
+              K = sens_forest$X[1, "K"],
+              canopy_thresh = canopy_thresh)
+
+forest_growth_res_sens <- ode(y = c_initial, times = simtimes, func = forest_growth, parms = parms)
+
+colnames(forest_growth_res_sens) <- c("time", "carbon")
+head(forest_growth_res_sens)
+
+```
+
+### Extract the metric of interest: maximum forest size
+
+```{r, get-metric}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+forest_growth_df <- as.data.frame(forest_growth_res_sens)
+
+maxcarbon <- max(forest_growth_df$carbon)
+print(glue("Max carbon: {round(maxcarbon, 2)} kg"))
+
+# years required to get to a threshold of 50% of carrying capacity
+canopy_thresh <- 0.5 * sens_forest$X[1, "K"]
+idx <- which(forest_growth_df$carbon > canopy_thresh)[1]
+
+print(glue("Number of years required to reach 50% of carrying capacity: {idx}"))
+```
+
+```{r, plot-metric}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+ggplot(forest_growth_df, aes(time, carbon)) +
+  geom_line() +
+  geom_vline(xintercept = canopy_thresh, col = "red") +
+  labs(y = "Carbon", title = "When do we get to 50% of carrying capacity")+
+  xlab("Time (years)") +
+  ylab("Forest size (kg carbon)") +
+  scale_y_continuous(breaks = round(seq(min(forest_growth_df$carbon), 
+                                        max(forest_growth_df$carbon), 
+                                        by = 10),1)) +
+  theme_bw()
+```
+
+### Run sobol sensitivity analysis for the maximum forest size metric
+
+```{r, run-sobol}
+#| eval: true
+#| echo: true
+#| code-fold: false
+
+# define metric function
+compute_metrics <- function(forest_growth_df, canopy_thresh) {
+  maxcarbon <- max(forest_growth_df$carbon)
+  idx <- which(forest_growth_df$carbon > canopy_thresh)[1]
+  idx <- ifelse(is.na(idx), length(forest_growth_df$carbon), idx)
+  threshyear <- forest_growth_df$time[idx]
+  return(list(maxcarbon = maxcarbon, threshyear = threshyear))
+}
+
+# define wrapper function to run solver and compute metrics
+carbon_wrapper <- function(c_initial, r, g, K, canopy_thresh, simtimes, odefunc, metricfunc) {
+  parms <- list(r = r, g = g, K = K, canopy_thresh = canopy_thresh)
+  result <- ode(y = c_initial, 
+                times = simtimes, 
+                func = odefunc, 
+                parms = parms, 
+                method="euler")
+  colnames(result) <- c("time", "carbon")
+  metrics <- metricfunc(as.data.frame(result), 
+                        canopy_thresh = canopy_thresh)
+  return(metrics)
+}
+
+# test function
+carbon_wrapper(
+  r = 0.01, g = 2, K = 250, canopy_thresh = 50, c_initial = 10, simtimes = seq(from = 1, to = 300),
+  odefunc = forest_growth, metricfunc = compute_metrics
+)
+
+# run model for all parameter sets
+allresults <- as.data.frame(sens_forest$X) %>%
+  pmap(carbon_wrapper, 
+       c_initial = c_initial, 
+       simtimes = simtimes, 
+       odefunc = forest_growth, 
+       canopy_thresh = 50,
+       metricfunc = compute_metrics)
+
+# extract metrics into data frame
+allres <- allresults %>% map_dfr(`[`, c("maxcarbon"))
+```
+
+### Plot sensitivity analysis results
+
+```{r, plot-boxplot}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+# create boxplots
+tmp <- allres %>% pivot_longer(cols = everything(), names_to = "metric", values_to = "value")
+ggplot(tmp, aes(metric, value, col = metric)) +
+  geom_boxplot()+
+  theme_bw()
+```
+
+### Compute sobol indices for each metric
+
+```{r, sobol-indices}
+#| eval: true
+#| echo: true
+#| code-fold: true
+
+sens_forest_maxcarbon <- sensitivity::tell(sens_forest, allres$maxcarbon)
+
+# compute Sobol indices
+rownames(sens_forest_maxcarbon$S) <- c("r", "g", "K")
+rownames(sens_forest_maxcarbon$T) <- c("r", "g", "K")
+
+knitr::kable(sens_forest_maxcarbon$S, caption = "First-order Sobol indices", digits = 6)
+knitr::kable(sens_forest_maxcarbon$T, caption = "Total Sobol indices", digits = 6)
+```
+
+### Interpretation
+
+From our sensitivity analysis, we can conclude that the exponential rate of immature forest growth determines the maximum carbon potential of a forest.
+
+Specifically, r is over 99% and dominates the input parameters with no zero in the confidence intervals.
+The other two parameters - g and K - are negligible and have zero in their confidence intervals. Additionally, there is no obvious interaction between input parameters based on the the total sobol indices results.
+This tells us that to achieve maximum carbon in the forest, we should focus on establishing a forest in its early stage.
+Once the forest reaches maturity, after the canopy closure threshold, the rate of forest growth slows down and does not increase noticeably carbon.
+
+This makes intuitive sense: once a forest is established, it has reached a self-sufficient ecosystem balance that continues to function under stable conditions.
+It does not continue creating more carbon in the system; rather, it maintains the level of carbon it has already achieved.
+
+This can have profound implications when coupled with the effects of climate change.
+It shows that if a young forest does not have a chance to grow efficiently (e.g., if it is harvested, burned, conditions are too dry, etc.), it will not be able to reach its full carbon storage potential.
