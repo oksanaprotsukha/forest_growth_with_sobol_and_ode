@@ -1,7 +1,7 @@
 #' Calculate forest growth rate using a differential equation
 #'
-#' @param C - the size of the forest in units of carbon
-#' @param parms - as list with three values, r, K, harv
+#' @param y - the size of the forest in units of carbon
+#' @param parms - as list with three values, r, g, K
 #' @param r - an exponential growth rate during a young forest stage before a canopy closure threshold is reached
 #' @param g - a linear growth rate after a canopy closure threshold is reached
 #' @param K - carrying capacity in units of carbon

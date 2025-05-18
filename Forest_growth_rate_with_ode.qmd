@@ -18,6 +18,10 @@ author:
 date: 2025-05-16
 ---
 
+[Code repository: GitHub - oksanaprotsukha/forest_growth_with_sobol_and_ode](https://github.com/oksanaprotsukha/forest_growth_with_sobol_and_ode)
+
+In this assignment, we implement the forest growth model illustrated on figure 1 and conduct a sensitivity analysis using ordinary differential equations and Sobol methods:
+
 ```{mermaid}
 %%| label: fig-mermaid
 %%| fig-width: 6
@@ -27,7 +31,7 @@ flowchart TD
     A[Initial forest size C_innitial] --> B{"Is C less than threshold?"}
     B -->|"Yes (young forest)"| C["Exponential Growth: 
     dC/dt = r × C"]
-    B -->|"No (mature forest)"| D["Logistic Growth: 
+    B -->|"No (mature forest)"| D["Linear Growth: 
     dC/dt = g × (1 - C/K)"]
     C --> E[Update C]
     D --> E
